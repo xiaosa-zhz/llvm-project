@@ -1484,3 +1484,28 @@ void foo() {
 }
 
 }
+
+namespace GH163582 {
+// A by-copy capture in a lambda with a dependent explicit object parameter is
+// type-dependent, and therefore also value- and instantiation-dependent. It
+// used to only be marked as type-dependent, so it was never instantiated and
+// the assertions below were silently skipped.
+void f() {
+  int x;
+  auto l = [x](this auto&&) {
+    static_assert(sizeof(decltype(x)) == 1); // expected-error {{static assertion failed}} expected-note {{expression evaluates to '4 == 1'}}
+  };
+  l(); // expected-note {{in instantiation of}}
+}
+
+struct S {
+  int x;
+  void g() {
+    // The same holds for members accessed through a captured '*this'.
+    auto l = [*this](this auto&&) {
+      static_assert(sizeof(decltype(x)) == 1); // expected-error {{static assertion failed}} expected-note {{expression evaluates to '4 == 1'}}
+    };
+    l(); // expected-note {{in instantiation of}}
+  }
+};
+}
