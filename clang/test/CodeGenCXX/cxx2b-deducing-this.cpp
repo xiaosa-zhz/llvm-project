@@ -318,6 +318,7 @@ void f() {
 }
 
 // TODO: some description
+namespace GH125439 {
 void main() {
   int x = 0;
   auto f = [x](this auto) { decltype(x) n; };
