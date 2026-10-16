@@ -316,3 +316,17 @@ void f() {
 // CHECK:   %1 = getelementptr inbounds nuw %class.anon.12, ptr %0, i32 0, i32 0
 // CHECK:   ret ptr %1
 }
+
+// TODO: some description
+void main() {
+  int x = 0;
+  auto f = [x](this auto) { decltype(x) n; };
+  f();
+}
+}
+
+// CHECK-LABEL: define {{.*}} void @_ZN8GH1254394mainEv
+// CHECK: call void @"_ZZN8GH1254394mainEvE{{.*}}"
+// CHECK-LABEL: define {{.*}} void @"_ZZN8GH1254394mainEvE{{.*}}"
+// CHECK: %n = alloca i32, align 4
+// CHECK: ret void

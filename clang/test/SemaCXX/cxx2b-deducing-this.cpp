@@ -1404,6 +1404,103 @@ void f() {
 
 }
 
+namespace GH163582 {
+
+// Builtin do not keep 
+template <class T, class U> constexpr bool is_same_v = false;
+template <class T> constexpr bool is_same_v<T, T> = true;
+
+struct S {
+  int x = 1;
+
+  void f() {
+    [n = 42](this auto&&) {
+      static_assert(is_same_v<decltype(n), int>);
+      static_assert(is_same_v<decltype(n), long&>); // expected-error {{static assertion failed}}
+    }(); // expected-note {{in instantiation of function template specialization}}
+
+    [*this](this auto&&) {
+      static_assert(is_same_v<decltype(this), S*>);
+      static_assert(is_same_v<decltype(this), void>); // expected-error {{static assertion failed}}
+    }(); // expected-note {{in instantiation of function template specialization}}
+
+    [&r = x](this auto&&) {
+      static_assert(is_same_v<decltype(r), int&>);
+    }();
+  }
+
+  // The cv-qualification of an explicit object parameter propagates to a
+  // by-copy capture exactly like a non-static data member accessed through a
+  // cv/ref-qualified member function, so 'decltype((x))' (which takes the
+  // value category and cv-qualification of the expression into account)
+  // depends on both the parameter form and the object argument.
+  void g() {
+    int x = 1;
+
+    // Ordinary (implicit-object) lambdas.
+    [x]() {
+      static_assert(is_same_v<decltype((x)), const int&>);
+    }();
+    [x]() mutable {
+      static_assert(is_same_v<decltype((x)), int&>);
+    }();
+
+    // this auto& : non-const lvalue object
+    auto l_ref = [x](this auto&) {
+      static_assert(is_same_v<decltype((x)), int&>);
+      static_assert(is_same_v<decltype((x)), const int&>); // expected-error {{static assertion failed}}
+    };
+    l_ref(); // expected-note {{in instantiation of function template specialization}}
+
+    // this const auto& : const lvalue object
+    auto l_cref = [x](this const auto&) {
+      static_assert(is_same_v<decltype((x)), const int&>);
+      static_assert(is_same_v<decltype((x)), int&>); // expected-error {{static assertion failed}}
+    };
+    l_cref(); // expected-note {{in instantiation of function template specialization}}
+
+    // this auto&& : constness follows the object argument; the value category
+    // stays lvalue because the object parameter is a named entity.
+    auto l_fwd_lv = [x](this auto&&) {
+      static_assert(is_same_v<decltype((x)), int&>);
+      static_assert(is_same_v<decltype((x)), const int&>); // expected-error {{static assertion failed}}
+    };
+    l_fwd_lv(); // expected-note {{in instantiation of function template specialization}}
+
+    auto l_fwd_clv = [x](this auto&&) {
+      static_assert(is_same_v<decltype((x)), const int&>);
+      static_assert(is_same_v<decltype((x)), int&>); // expected-error {{static assertion failed}}
+    };
+    static_cast<const decltype(l_fwd_clv)&>(l_fwd_clv)(); // expected-note {{in instantiation of function template specialization}}
+
+    auto l_fwd_rv = [x](this auto&&) {
+      static_assert(is_same_v<decltype((x)), int&>);
+    };
+    static_cast<decltype(l_fwd_rv)&&>(l_fwd_rv)();
+
+    auto l_fwd_crv = [x](this auto&&) {
+      static_assert(is_same_v<decltype((x)), const int&>);
+    };
+    static_cast<const decltype(l_fwd_crv)&&>(l_fwd_crv)();
+
+    // this auto : by-value object parameter (const is stripped)
+    auto l_val = [x](this auto) {
+      static_assert(is_same_v<decltype((x)), int&>);
+      static_assert(is_same_v<decltype((x)), const int&>); // expected-error {{static assertion failed}}
+    };
+    l_val(); // expected-note {{in instantiation of function template specialization}}
+
+    // this const auto&& : rvalues only, always const
+    auto l_cfwd = [x](this const auto&&) {
+      static_assert(is_same_v<decltype((x)), const int&>);
+      static_assert(is_same_v<decltype((x)), int&>); // expected-error {{static assertion failed}}
+    };
+    static_cast<decltype(l_cfwd)&&>(l_cfwd)(); // expected-note {{in instantiation of function template specialization}}
+  }
+};
+
+} // namespace GH163582
+
 namespace GH173943 {
 
 a void Bar(this int) { // expected-note {{candidate function}}
@@ -1483,29 +1580,4 @@ void foo() {
   // expected-error@-1 {{no matching function for call to object of type 'S'}}
 }
 
-}
-
-namespace GH163582 {
-// A by-copy capture in a lambda with a dependent explicit object parameter is
-// type-dependent, and therefore also value- and instantiation-dependent. It
-// used to only be marked as type-dependent, so it was never instantiated and
-// the assertions below were silently skipped.
-void f() {
-  int x;
-  auto l = [x](this auto&&) {
-    static_assert(sizeof(decltype(x)) == 1); // expected-error {{static assertion failed}} expected-note {{expression evaluates to '4 == 1'}}
-  };
-  l(); // expected-note {{in instantiation of}}
-}
-
-struct S {
-  int x;
-  void g() {
-    // The same holds for members accessed through a captured '*this'.
-    auto l = [*this](this auto&&) {
-      static_assert(sizeof(decltype(x)) == 1); // expected-error {{static assertion failed}} expected-note {{expression evaluates to '4 == 1'}}
-    };
-    l(); // expected-note {{in instantiation of}}
-  }
-};
 }
