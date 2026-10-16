@@ -326,6 +326,11 @@ void main() {
 }
 }
 
+// TODO: try fix GH153493 and add tests here
+namespace GH153493 {
+// Add tests for GH153493 here
+}
+
 // CHECK-LABEL: define {{.*}} void @_ZN8GH1254394mainEv
 // CHECK: call void @"_ZZN8GH1254394mainEvE{{.*}}"
 // CHECK-LABEL: define {{.*}} void @"_ZZN8GH1254394mainEvE{{.*}}"
