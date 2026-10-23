@@ -24,6 +24,7 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/ExprOpenMP.h"
 #include "clang/AST/OpenMPClause.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
@@ -195,6 +196,118 @@ public:
   /// CXXConstructExpr is outside of the expression at which the TreeTransform
   /// started.
   bool AllowSkippingCXXConstructExpr() { return true; }
+
+  /// Recreates the implicit captures of a lambda expression whose body
+  /// instantiation is deferred (P0588R1) by walking the pattern's body.
+  ///
+  /// For dependent lambdas, capture analysis does not run while parsing the
+  /// pattern; the implicit captures are normally discovered while transforming
+  /// the body. When the body is instantiated lazily, walk the pattern's body
+  /// instead and capture the transformed variables in the new closure.
+  class GenericLambdaCaptureBuilder
+      : public RecursiveASTVisitor<GenericLambdaCaptureBuilder> {
+    TreeTransform &TT;
+    const CXXMethodDecl *PatternCallOperator;
+    SourceLocation ThisLoc;
+    bool HasThis = false;
+
+  public:
+    bool Invalid = false;
+
+    GenericLambdaCaptureBuilder(TreeTransform &TT,
+                                const CXXMethodDecl *PatternCallOperator)
+        : TT(TT), PatternCallOperator(PatternCallOperator) {}
+
+    bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+      if (!DRE->refersToEnclosingVariableOrCapture())
+        return true;
+
+      auto *VD = dyn_cast<ValueDecl>(DRE->getDecl());
+      if (!VD)
+        return true;
+
+      // References to entities declared inside this lambda never need to be
+      // captured by it.
+      const DeclContext *VDC =
+          VD->getDeclContext()->getEnclosingNonExpansionStatementContext();
+      if (VDC == PatternCallOperator || PatternCallOperator->Encloses(VDC))
+        return true;
+
+      // A reference to a parameter pack that appears outside of a pack
+      // expansion (for instance in a pack indexing expression) cannot be
+      // mapped to a single declaration. Capture every instantiated element of
+      // the pack instead; this matches what instantiation of the body does for
+      // each expanded element.
+      if (VD->isParameterPack()) {
+        if (LocalInstantiationScope *Scope =
+                TT.getSema().CurrentInstantiationScope) {
+          auto *Found = Scope->findInstantiationOf(VD);
+          if (Found) {
+            if (auto *Pack =
+                    llvm::dyn_cast<LocalInstantiationScope::DeclArgumentPack *>(
+                        *Found)) {
+              for (ValueDecl *Elem : *Pack)
+                if (Elem)
+                  captureVariable(Elem, DRE->getBeginLoc());
+              return true;
+            }
+          }
+        }
+      }
+
+      auto *NewVD = cast_or_null<ValueDecl>(
+          TT.getDerived().TransformDecl(DRE->getBeginLoc(), VD));
+      if (!NewVD) {
+        Invalid = true;
+        return true;
+      }
+
+      captureVariable(NewVD, DRE->getBeginLoc());
+      return true;
+    }
+
+    void captureVariable(ValueDecl *VD, SourceLocation Loc) {
+      TT.getSema().tryCaptureVariable(VD, Loc, TryCaptureKind::Implicit);
+    }
+
+    bool VisitCXXThisExpr(CXXThisExpr *TE) {
+      if (!HasThis)
+        ThisLoc = TE->getBeginLoc();
+      HasThis = true;
+      return true;
+    }
+
+    /// The bodies and initializers of nested lambdas contribute transitive
+    /// captures to this lambda; their own captures are computed when they are
+    /// instantiated.
+    bool TraverseLambdaExpr(LambdaExpr *LE) {
+      for (Expr *Init : LE->capture_inits())
+        if (Init && !this->TraverseStmt(Init))
+          return false;
+      return LE->getBody() ? this->TraverseStmt(LE->getBody()) : true;
+    }
+
+    void finish() {
+      if (!HasThis)
+        return;
+      Sema &S = TT.getSema();
+      CXXRecordDecl *ThisContext =
+          dyn_cast_if_present<CXXRecordDecl>(S.getFunctionLevelDeclContext());
+      Sema::CXXThisScopeRAII ThisScope(S, ThisContext, Qualifiers());
+      // A 'this' that is used in an unevaluated operand (e.g. inside a
+      // decltype) does not need to be captured, so probe for capturability
+      // first. If 'this' cannot be captured here, leave it to the
+      // instantiation of the body, which knows whether the use is evaluated
+      // and reports the diagnostic at the right place.
+      if (S.CheckCXXThisCapture(ThisLoc, /*Explicit=*/false,
+                                /*BuildAndDiagnose=*/false, nullptr,
+                                /*ByCopy=*/false))
+        return;
+      S.CheckCXXThisCapture(ThisLoc, /*Explicit=*/false,
+                            /*BuildAndDiagnose=*/true, nullptr,
+                            /*ByCopy=*/false);
+    }
+  };
 
   /// Returns the location of the entity being transformed, if that
   /// information was not available elsewhere in the AST.
@@ -15227,8 +15340,23 @@ TreeTransform<Derived>::TransformCXXThisExpr(CXXThisExpr *E) {
     auto &S = getSema();
     if (E->isCapturedByCopyInLambdaWithExplicitObjectParameter())
       return S.getCurrentThisType();
-    if (S.getCurLambda())
-      return getDerived().TransformType(E->getType());
+    if (S.getCurLambda()) {
+      QualType Pat = getDerived().TransformType(E->getType());
+      // When the body of the call operator is instantiated lazily (P0588R1),
+      // the current 'this' type may be more cv-qualified than the pattern's
+      // (for instance when '*this' was captured by copy in a lambda with an
+      // explicit object parameter). Adopt those qualifiers, keeping the
+      // record of the pattern type so that member references keep working.
+      QualType Cur = S.getCurrentThisType();
+      if (!Cur.isNull() && Cur->isPointerType() && Pat->isPointerType()) {
+        QualType CurPointee = Cur->getPointeeType();
+        if (!S.Context.hasSameUnqualifiedType(CurPointee,
+                                              Pat->getPointeeType()))
+          return S.Context.getPointerType(S.Context.getQualifiedType(
+              Pat->getPointeeType(), CurPointee.getQualifiers()));
+      }
+      return Pat;
+    }
     return S.getCurrentThisType();
   }();
 
@@ -16397,6 +16525,35 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
 
   bool Invalid = false;
 
+  // P0588R1 / C++20 [temp.inst]/9: instantiation of the body of a lambda whose
+  // call operator is a template is deferred until the call operator template is
+  // instantiated. The body is the only place that implicit captures would
+  // normally be discovered, so create them eagerly from the pattern instead.
+  bool DeferBody =
+      E->getCallOperator()->getDescribedFunctionTemplate() != nullptr;
+
+  // The enclosing template arguments needed to instantiate the deferred body
+  // are reconstructed by walking outwards from the closure's declaration
+  // context (see Sema::getTemplateInstantiationArgs). A lambda that appears in
+  // the type-id of a namespace-scope alias template is not nested in a
+  // declaration context that carries the alias's arguments, so they cannot be
+  // recovered later: instantiate the body now, while they are still available.
+  if (DeferBody && E->getLambdaClass()->getDeclContext()->isFileContext()) {
+    for (const auto &Ctx : llvm::reverse(getSema().CodeSynthesisContexts)) {
+      if (Ctx.Kind ==
+          Sema::CodeSynthesisContext::TypeAliasTemplateInstantiation) {
+        DeferBody = false;
+        break;
+      }
+      if (Ctx.Kind == Sema::CodeSynthesisContext::TemplateInstantiation ||
+          Ctx.Kind == Sema::CodeSynthesisContext::
+                          ExplicitTemplateArgumentSubstitution ||
+          Ctx.Kind ==
+              Sema::CodeSynthesisContext::DeducedTemplateArgumentSubstitution)
+        break;
+    }
+  }
+
   // Transform captures.
   for (LambdaExpr::capture_iterator C = E->capture_begin(),
                                  CEnd = E->capture_end();
@@ -16532,6 +16689,16 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
     getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind,
                                  EllipsisLoc);
   }
+
+  if (DeferBody) {
+    // The body will not be transformed here, so the implicit captures that
+    // would normally be discovered while transforming it have to be computed
+    // from the pattern's body instead.
+    GenericLambdaCaptureBuilder CaptureBuilder(*this, E->getCallOperator());
+    CaptureBuilder.TraverseStmt(E->getBody());
+    CaptureBuilder.finish();
+    Invalid |= CaptureBuilder.Invalid;
+  }
   getSema().finishLambdaExplicitCaptures(LSI);
 
   // Transform the template parameters, and add them to the current
@@ -16601,8 +16768,32 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
       Sema::ExpressionEvaluationContext::PotentiallyEvaluated,
       E->getCallOperator());
 
+  // If the body is deferred, the call operator template of the closure we just
+  // built has no body of its own; instantiation of the body has to be
+  // redirected to the pattern's call operator template.
+  FunctionTemplateDecl *PatternCallOperatorTemplate =
+      E->getCallOperator()->getDescribedFunctionTemplate();
+
   StmtResult Body;
-  {
+  if (DeferBody) {
+    // Link the instantiated call operator template to its pattern so that
+    // FunctionDecl::getTemplateInstantiationPattern() can find the body to
+    // instantiate when the call operator template is instantiated.
+    if (FunctionTemplateDecl *NewCallOperatorTemplate =
+            NewCallOperator->getDescribedFunctionTemplate())
+      NewCallOperatorTemplate->setInstantiatedFromMemberTemplate(
+          PatternCallOperatorTemplate);
+
+    // ActOnLambda* will pop the function scope for us.
+    FuncScopeCleanup.disable();
+
+    if (Invalid) {
+      SavedContext.pop();
+      getSema().ActOnLambdaError(E->getBeginLoc(), /*CurScope=*/nullptr,
+                                 /*IsInstantiation=*/true);
+      return ExprError();
+    }
+  } else {
     Sema::NonSFINAEContext _(getSema());
     Sema::CodeSynthesisContext C;
     C.Kind = clang::Sema::CodeSynthesisContext::LambdaExpressionSubstitution;
@@ -16614,21 +16805,21 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                    : getDerived().TransformLambdaBody(E, E->getBody());
 
     getSema().popCodeSynthesisContext();
+
+    // ActOnLambda* will pop the function scope for us.
+    FuncScopeCleanup.disable();
+
+    if (Body.isInvalid()) {
+      SavedContext.pop();
+      getSema().ActOnLambdaError(E->getBeginLoc(), /*CurScope=*/nullptr,
+                                 /*IsInstantiation=*/true);
+      return ExprError();
+    }
+
+    getSema().ActOnFinishFunctionBody(NewCallOperator, Body.get(),
+                                      /*IsInstantiation=*/true,
+                                      /*RetainFunctionScopeInfo=*/true);
   }
-
-  // ActOnLambda* will pop the function scope for us.
-  FuncScopeCleanup.disable();
-
-  if (Body.isInvalid()) {
-    SavedContext.pop();
-    getSema().ActOnLambdaError(E->getBeginLoc(), /*CurScope=*/nullptr,
-                               /*IsInstantiation=*/true);
-    return ExprError();
-  }
-
-  getSema().ActOnFinishFunctionBody(NewCallOperator, Body.get(),
-                                    /*IsInstantiation=*/true,
-                                    /*RetainFunctionScopeInfo=*/true);
   SavedContext.pop();
 
   // Recompute the dependency of the lambda so that we can defer the lambda call
@@ -16667,8 +16858,9 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   DependencyKind = getDerived().ComputeLambdaDependency(LSI);
   Class->setLambdaDependencyKind(DependencyKind);
 
-  return getDerived().RebuildLambdaExpr(E->getBeginLoc(),
-                                        Body.get()->getEndLoc(), LSI);
+  SourceLocation LambdaEndLoc =
+      DeferBody ? E->getEndLoc() : Body.get()->getEndLoc();
+  return getDerived().RebuildLambdaExpr(E->getBeginLoc(), LambdaEndLoc, LSI);
 }
 
 template<typename Derived>

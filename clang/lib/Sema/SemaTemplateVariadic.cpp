@@ -1129,8 +1129,18 @@ UnsignedOrNone Sema::getNumArgumentsInExpansionFromUnexpanded(
       // expand this pack yet.
       return std::nullopt;
 
+    // The template argument at this depth and index might not be a pack if the
+    // pattern's parameter was renumbered relative to the argument list (for
+    // example, for the deferred exception specification of a generic lambda
+    // call operator, which is substituted against the pattern's call
+    // operator). Treat that as not-yet-expandable rather than reading the
+    // argument as a pack.
+    const TemplateArgument &Arg = TemplateArgs(Depth, Index);
+    if (Arg.getKind() != TemplateArgument::Pack)
+      return std::nullopt;
+
     // Determine the size of the argument pack.
-    unsigned Size = TemplateArgs(Depth, Index).pack_size();
+    unsigned Size = Arg.pack_size();
     assert((!Result || *Result == Size) && "inconsistent pack sizes");
     Result = Size;
   }

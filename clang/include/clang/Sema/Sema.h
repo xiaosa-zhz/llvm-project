@@ -9389,7 +9389,8 @@ public:
     LambdaScopeForCallOperatorInstantiationRAII(
         Sema &SemasRef, FunctionDecl *FD, MultiLevelTemplateArgumentList MLTAL,
         LocalInstantiationScope &Scope,
-        bool ShouldAddDeclsFromParentScope = true);
+        bool ShouldAddDeclsFromParentScope = true,
+        bool RebuildFunctionScope = true);
   };
 
   /// Compute the mangling number context for a lambda expression or

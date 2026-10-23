@@ -97,6 +97,25 @@ inline bool isGenericLambdaCallOperatorOrStaticInvokerSpecialization(
   return false;
 }
 
+/// Determine whether \p FD is a lambda call operator (or a specialization of
+/// one) whose body has not been instantiated yet.
+///
+/// Clang defers instantiation of the body of a lambda whose call operator is a
+/// template (P0588R1, [temp.inst]/9): instantiating the enclosing entity only
+/// instantiates the closure type and the call operator's declaration. The body
+/// stays in the pattern closure's call operator and is instantiated when the
+/// call operator template is instantiated.
+inline bool isGenericLambdaUninstantiatedCallOperator(const FunctionDecl *FD) {
+  const auto *MD = dyn_cast_if_present<CXXMethodDecl>(FD);
+  if (!MD || !isLambdaCallOperator(MD))
+    return false;
+  const FunctionTemplateDecl *FTD = MD->getPrimaryTemplate();
+  if (!FTD || !FTD->getInstantiatedFromMemberTemplate())
+    return false;
+  const FunctionDecl *Templated = FTD->getTemplatedDecl();
+  return Templated && !Templated->doesThisDeclarationHaveABody();
+}
+
 // This returns the parent DeclContext ensuring that the correct
 // parent DeclContext is returned for Lambdas
 inline DeclContext *getLambdaAwareParentOfDeclContext(DeclContext *DC) {
@@ -106,6 +125,6 @@ inline DeclContext *getLambdaAwareParentOfDeclContext(DeclContext *DC) {
     return DC->getParent();
 }
 
-} // clang
+} // namespace clang
 
 #endif

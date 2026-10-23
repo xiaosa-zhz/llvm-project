@@ -74,13 +74,11 @@ namespace ccce {
 }
 
 namespace generic_lambda {
-  // Substituting for T produces a hard error here, even if substituting for
-  // the type of x would remove the error.
+  // Emits error before P0588, now 'if constexpr' discards the branch correctly.
   template<typename T> void f() {
     [](auto x) {
       if constexpr (sizeof(T) == 1 && sizeof(x) == 1)
-        T::error(); // expected-error 2{{'::'}}
-                    // expected-note@-3 2{{while substituting into a lambda expression here}}
+        T::error();
     } (0);
   }
 
@@ -88,16 +86,15 @@ namespace generic_lambda {
     [](auto x) {
       if constexpr (sizeof(T) == 1)
         if constexpr (sizeof(x) == 1)
-          T::error(); // expected-error {{'::'}}
-                      // expected-note@-4 {{while substituting into a lambda expression here}}
+          T::error();
     } (0);
   }
 
   void use() {
-    f<int>(); // expected-note {{instantiation of}}
-    f<char>(); // expected-note {{instantiation of}}
-    g<int>(); // ok
-    g<char>(); // expected-note {{instantiation of}}
+    f<int>();
+    f<char>();
+    g<int>();
+    g<char>();
   }
 }
 

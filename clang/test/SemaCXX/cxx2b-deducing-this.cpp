@@ -245,18 +245,18 @@ void TestMutationInLambda() {
     };
 
     const auto l11 = [x](this auto&) {
-        const auto l11a = [&x](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}} expected-note {{while substituting}}
-        l11a();
+        const auto l11a = [&x](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}}
+        l11a(); // expected-note {{requested here}}
     };
 
     const auto l12 = [x](this auto&) {
-        const auto l12a = [&](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}} expected-note {{while substituting}}
-        l12a();
+        const auto l12a = [&](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}}
+        l12a(); // expected-note {{requested here}}
     };
 
     const auto l13 = [=](this auto&) {
-        const auto l13a = [&x](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}} expected-note {{while substituting}}
-        l13a();
+        const auto l13a = [&x](this auto&) { x = 42; }; // expected-error {{cannot assign to a variable captured by copy in a non-mutable lambda}}
+        l13a(); // expected-note {{requested here}}
     };
 
     struct S {

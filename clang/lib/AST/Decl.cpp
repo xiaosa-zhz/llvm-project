@@ -4330,8 +4330,21 @@ FunctionDecl::getTemplateInstantiationPattern(bool ForDefinition) const {
 
   if (isGenericLambdaCallOperatorSpecialization(
           dyn_cast<CXXMethodDecl>(this))) {
-    assert(getPrimaryTemplate() && "not a generic lambda call operator?");
-    return getPrimaryTemplate()->getTemplatedDecl();
+    FunctionTemplateDecl *Primary = getPrimaryTemplate();
+    assert(Primary && "not a generic lambda call operator?");
+    // If the body of the lambda is instantiated lazily (P0588R1), the call
+    // operator template of the instantiated closure has no body of its own;
+    // the body to instantiate lives in the pattern closure's call operator,
+    // which is reachable through the instantiated-from-member-template chain.
+    while (Primary->getTemplatedDecl() &&
+           !Primary->getTemplatedDecl()->doesThisDeclarationHaveABody()) {
+      FunctionTemplateDecl *Pattern =
+          Primary->getInstantiatedFromMemberTemplate();
+      if (!Pattern)
+        break;
+      Primary = Pattern;
+    }
+    return Primary->getTemplatedDecl();
   }
 
   // Check for a declaration of this function that was instantiated from a

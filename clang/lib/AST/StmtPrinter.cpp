@@ -2546,9 +2546,10 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
     }
   }
 
-  // Print the body.
+  // Print the body. The body may be absent if the lambda's call operator has
+  // not been instantiated yet (the body is instantiated lazily, per P0588R1).
   OS << ' ';
-  if (Policy.TerseOutput || Policy.SuppressLambdaBody)
+  if (Policy.TerseOutput || Policy.SuppressLambdaBody || !Node->getBody())
     OS << "{}";
   else
     PrintRawCompoundStmt(Node->getCompoundStmtBody());

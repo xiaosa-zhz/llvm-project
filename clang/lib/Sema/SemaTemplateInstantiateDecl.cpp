@@ -5555,9 +5555,14 @@ void Sema::addInstantiatedLocalVarsToScope(FunctionDecl *Function,
       continue;
 
     Scope.InstantiatedLocal(VD, *it);
-    LSI->addCapture(cast<VarDecl>(*it), /*isBlock=*/false, /*isByref=*/false,
-                    /*isNested=*/false, VD->getLocation(), SourceLocation(),
-                    VD->getType(), /*Invalid=*/false);
+    // When the body of the lambda is instantiated lazily (P0588R1), the
+    // closure's capture list is already complete, and it records the correct
+    // capture kind for each variable. Don't overwrite it with a by-copy
+    // capture here.
+    if (!LSI->CaptureMap.count(cast<ValueDecl>(*it)))
+      LSI->addCapture(cast<VarDecl>(*it), /*isBlock=*/false, /*isByref=*/false,
+                      /*isNested=*/false, VD->getLocation(), SourceLocation(),
+                      VD->getType(), /*Invalid=*/false);
   }
 }
 
@@ -6268,9 +6273,22 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     CurFPFeatures = FPOptions(getLangOpts());
     FpPragmaStack.CurrentValue = FPOptionsOverride();
 
-    if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
-                                         TemplateArgs))
+    // When the body of a lambda call operator is instantiated lazily
+    // (P0588R1), the instantiation scopes of the enclosing function and of any
+    // enclosing lambdas are long gone; reconstruct the pattern-to-instantiation
+    // mappings from the pattern declarations.
+    const bool GenericLambdaBody =
+        isGenericLambdaUninstantiatedCallOperator(Function);
+    std::optional<Sema::LambdaScopeForCallOperatorInstantiationRAII>
+        GenericLambdaScope;
+    if (GenericLambdaBody) {
+      GenericLambdaScope.emplace(*this, Function, TemplateArgs, Scope,
+                                 /*ShouldAddDeclsFromParentScope=*/true,
+                                 /*RebuildFunctionScope=*/false);
+    } else if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
+                                                TemplateArgs)) {
       return;
+    }
 
     StmtResult Body;
     if (PatternDecl->hasSkippedBody()) {
@@ -6300,6 +6318,18 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     // FIXME: finishing the function body while in an expression evaluation
     // context seems wrong. Investigate more.
     ActOnFinishFunctionBody(Function, Body.get(), /*IsInstantiation=*/true);
+
+    // The body of a lambda call operator may have been deferred when the
+    // closure type was instantiated, in which case its constexpr-ness has not
+    // been inferred from the body yet (unlike the eager path, where this
+    // happens while building the lambda expression). Infer it now.
+    if (isLambdaCallOperator(Function) && !Function->isConstexpr() &&
+        getLangOpts().CPlusPlus17 && Body.isUsable() && Body.get() &&
+        !isa<CoroutineBodyStmt>(Body.get()))
+      Function->setConstexprKind(CheckConstexprFunctionDefinition(
+                                     Function, CheckConstexprKind::CheckValid)
+                                     ? ConstexprSpecKind::Constexpr
+                                     : ConstexprSpecKind::Unspecified);
 
     inferLifetimeBoundAttribute(Function);
 

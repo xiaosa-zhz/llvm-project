@@ -153,7 +153,7 @@ namespace ODRUseTests {
   struct P { int a; int b; };
   void GH57826() {
     const auto [a, b] = P{1, 2}; //expected-note 2{{'b' declared here}} \
-                                 //expected-note 3{{'a' declared here}}
+                                 //expected-note 2{{'a' declared here}}
     (void)[&](auto c) { return b + [&a] {
         return a;
     }(); }(0);
@@ -174,13 +174,12 @@ namespace ODRUseTests {
                                                  // expected-note 4{{capture 'b'}}
         return a;
     }(0); }(0); // expected-note {{in instantiation}}
-    (void)[&b](auto c) { return b + [](auto) {   // expected-note 3{{lambda expression begins here}} \
-                                                 // expected-note 6{{capture 'a'}} \
-                                                 // expected-note 6{{default capture}} \
-                                                 // expected-note {{in instantiation}} \
-                                                 // expected-note {{while substituting into a lambda}}
-        return a;  // expected-error 3{{variable 'a' cannot be implicitly captured}}
-    }(0); }(0); // expected-note 2{{in instantiation}}
+    (void)[&b](auto c) { return b + [](auto) {   // expected-note 2{{lambda expression begins here}} \
+                                                 // expected-note 4{{capture 'a'}} \
+                                                 // expected-note 2{{default capture}} \
+                                                 // expected-note {{in instantiation}}
+        return a;  // expected-error 2{{variable 'a' cannot be implicitly captured}}
+    }(0); }(0); // expected-note 1{{in instantiation}}
   }
 }
 

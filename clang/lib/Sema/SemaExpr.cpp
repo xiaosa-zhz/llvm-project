@@ -19470,10 +19470,17 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
               CodeSynthesisContexts.size())
             PendingLocalImplicitInstantiations.push_back(
                 std::make_pair(Func, PointOfInstantiation));
-          else if (Func->isConstexpr())
+          else if (Func->isConstexpr() ||
+                   isGenericLambdaUninstantiatedCallOperator(Func))
             // Do not defer instantiations of constexpr functions, to avoid the
             // expression evaluator needing to call back into Sema if it sees a
             // call to such a function.
+            //
+            // The body of a deferred lambda call operator (P0588R1) determines
+            // whether the call operator is implicitly constexpr, so instantiate
+            // it as soon as it is odr-used rather than deferring it to the end
+            // of the translation unit; otherwise a call that is needed for
+            // constant evaluation would be diagnosed as non-constexpr.
             InstantiateFunctionDefinition(PointOfInstantiation, Func);
           else {
             Func->setInstantiationIsPending(true);
@@ -20357,7 +20364,15 @@ bool Sema::tryCaptureVariable(
     // we do not want to capture new variables.  What was captured
     // during either a lambdas transformation or initial parsing
     // should be used.
-    if (isGenericLambdaCallOperatorSpecialization(DC)) {
+    //
+    // The same holds when the body of the call operator is instantiated
+    // lazily (C++20 [temp.inst]/9, P0588R1): the capture set of the closure is
+    // computed when the closure is instantiated, and the body must use it.
+    // The enclosing lambda scopes are not active here, so this is also the
+    // point at which an uncapturable reference is diagnosed.
+    if (isGenericLambdaCallOperatorSpecialization(DC) ||
+        isGenericLambdaUninstantiatedCallOperator(
+            dyn_cast_or_null<FunctionDecl>(DC))) {
       if (BuildAndDiagnose) {
         LambdaScopeInfo *LSI = cast<LambdaScopeInfo>(CSI);
         if (LSI->ImpCaptureStyle == CapturingScopeInfo::ImpCap_None) {

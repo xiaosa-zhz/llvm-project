@@ -303,9 +303,21 @@ Response HandleFunction(Sema &SemaRef, const FunctionDecl *Function,
         Function->getPrimaryTemplate()->isMemberSpecialization())
       return Response::Done();
 
-    // If this function is a generic lambda specialization, we are done.
+    // If this function is a generic lambda specialization whose body has
+    // already been instantiated, we are done. If the body has been deferred,
+    // keep walking: the body is instantiated from the pattern with the
+    // template arguments of the enclosing entity, which are collected from
+    // the enclosing declaration contexts below.
     if (!ForConstraintInstantiation &&
-        isGenericLambdaCallOperatorOrStaticInvokerSpecialization(Function))
+        isGenericLambdaCallOperatorOrStaticInvokerSpecialization(Function) &&
+        (!isGenericLambdaUninstantiatedCallOperator(Function) ||
+         ForDefaultArgumentSubstitution ||
+         // Collecting the enclosing levels renumbers the call operator's own
+         // level, but a deferred call operator's exception specification is
+         // substituted using the pattern's call operator as the template, whose
+         // parameters are numbered without those levels. Only gather them when
+         // instantiating the body itself.
+         RelativeToPrimary))
       return Response::Done();
 
   } else if (auto *Template = Function->getDescribedFunctionTemplate()) {

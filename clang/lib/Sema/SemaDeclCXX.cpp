@@ -13,6 +13,7 @@
 #include "TypeLocBuilder.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/CharUnits.h"
@@ -476,6 +477,19 @@ static bool functionDeclHasDefaultArgument(const FunctionDecl *FD) {
   });
 }
 
+/// Return true if p FD is the call operator of a generic lambda, or the call
+/// operator template of an instantiated closure, whose body is instantiated on
+/// demand (C++20 [temp.inst]/9). Until then its constexpr-ness is unknown.
+static bool isGenericLambdaCallOperatorOrTemplate(const FunctionDecl *FD) {
+  const auto *MD = dyn_cast_if_present<CXXMethodDecl>(FD);
+  if (!MD || !isLambdaCallOperator(MD))
+    return false;
+  if (const FunctionTemplateDecl *FTD = FD->getDescribedFunctionTemplate())
+    return FTD->getInstantiatedFromMemberTemplate() &&
+           !FD->doesThisDeclarationHaveABody();
+  return isGenericLambdaUninstantiatedCallOperator(FD);
+}
+
 bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
                                 Scope *S) {
   bool Invalid = false;
@@ -697,7 +711,13 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
   // C++11 [dcl.constexpr]p1: If any declaration of a function or function
   // template has a constexpr specifier then all its declarations shall
   // contain the constexpr specifier.
-  if (New->getConstexprKind() != Old->getConstexprKind()) {
+  //
+  // A deferred generic lambda call operator (C++20 [temp.inst]/9) cannot be
+  // checked until its body is instantiated, so its constexpr-ness is still
+  // unknown when it is redeclared here. Redeclaring a lambda's call operator
+  // is diagnosed separately, so don't report a spurious mismatch either.
+  if (New->getConstexprKind() != Old->getConstexprKind() &&
+      !isGenericLambdaCallOperatorOrTemplate(Old)) {
     Diag(New->getLocation(), diag::err_constexpr_redecl_mismatch)
         << New << static_cast<int>(New->getConstexprKind())
         << static_cast<int>(Old->getConstexprKind());

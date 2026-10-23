@@ -564,7 +564,9 @@ public:
     // FIXME: This check is unsound. Destruction can happen in three places,
     // and a capture is only safe when all three are trivial: the lambda's
     // body, the callee that receives it, and the scope that creates it.
-    if (TFA.isTrivial(L->getBody()))
+    const Stmt *Body = L->getBody();
+    // The body of the lambda call operator may not have been instantiated yet.
+    if (!Body || TFA.isTrivial(Body))
       return;
     for (auto [C, CaptureInit] :
          llvm::zip_equal(L->captures(), L->capture_inits())) {

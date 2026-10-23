@@ -325,6 +325,9 @@ struct DepS {
 // CHECK-NEXT: ConstantExpr{{.*}}'int'
 // CHECK-NEXT: value: Int 1
 
+// The body of the generic lambda's call operator is instantiated lazily
+// (P0588R1), so the instantiated call operator template has no body of its
+// own; the attribute is attached to its declaration.
 // CHECK: VarDecl{{.*}}Lambda3 'const DepS<int>::(lambda at
 // CHECK-NEXT: value: Struct
 // CHECK-NEXT: ImplicitCastExpr
@@ -334,9 +337,6 @@ struct DepS {
 // CHECK-NEXT: TemplateTypeParmDecl
 // CHECK-NEXT: CXXMethodDecl{{.*}} operator() 'auto (auto) const'
 // CHECK-NEXT: ParmVarDecl{{.*}}'auto'
-// CHECK-NEXT: CompoundStmt
-// CHECK-NEXT: ReturnStmt
-// CHECK-NEXT: IntegerLiteral{{.*}} 'int' 1
 // CHECK-NEXT: OpenACCRoutineDeclAttr{{.*}}
 // CHECK-NEXT: gang clause
 // CHECK-NEXT: ConstantExpr{{.*}}'int'
@@ -523,7 +523,6 @@ void TemplFunc() {
 // CHECK-NEXT: TemplateTypeParmDecl
 // CHECK-NEXT: CXXMethodDecl{{.*}} operator() 'auto (auto) const'
 // CHECK-NEXT: ParmVarDecl{{.*}}'auto'
-// CHECK-NEXT: CompoundStmt
 // CHECK-NEXT: OpenACCRoutineDeclAttr
 // CHECK-NEXT: seq clause
 // CHECK: CXXMethodDecl{{.*}} operator() 'void (S) const'

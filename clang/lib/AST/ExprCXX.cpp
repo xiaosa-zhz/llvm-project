@@ -1369,10 +1369,31 @@ LambdaExpr *LambdaExpr::CreateDeserialized(const ASTContext &C,
 }
 
 void LambdaExpr::initBodyIfNeeded() const {
-  if (!getStoredStmts()[capture_size()]) {
-    auto *This = const_cast<LambdaExpr *>(this);
-    This->getStoredStmts()[capture_size()] = getCallOperator()->getBody();
+  if (getStoredStmts()[capture_size()])
+    return;
+
+  Stmt *Body = getCallOperator()->getBody();
+  if (!Body) {
+    // The body of the call operator of a lambda whose instantiation was
+    // deferred (see P0588R1) is not attached to the templated declaration of
+    // the call operator; it is attached to the call operator's
+    // specializations when they are instantiated. The body is absent until
+    // then, much like the body of a function template specialization that has
+    // not been defined yet.
+    const auto *CallOperatorTemplate =
+        getCallOperator()->getDescribedFunctionTemplate();
+    if (CallOperatorTemplate) {
+      for (const FunctionDecl *Spec : CallOperatorTemplate->specializations()) {
+        if (Spec->doesThisDeclarationHaveABody()) {
+          Body = Spec->getBody();
+          break;
+        }
+      }
+    }
   }
+
+  auto *This = const_cast<LambdaExpr *>(this);
+  This->getStoredStmts()[capture_size()] = Body;
 }
 
 Stmt *LambdaExpr::getBody() const {
@@ -1382,6 +1403,9 @@ Stmt *LambdaExpr::getBody() const {
 
 const CompoundStmt *LambdaExpr::getCompoundStmtBody() const {
   Stmt *Body = getBody();
+  // The body may not have been instantiated yet (P0588R1).
+  if (!Body)
+    return nullptr;
   if (const auto *CoroBody = dyn_cast<CoroutineBodyStmt>(Body))
     return cast<CompoundStmt>(CoroBody->getBody());
   return cast<CompoundStmt>(Body);
@@ -1461,13 +1485,20 @@ bool LambdaExpr::isMutable() const { return !getCallOperator()->isConst(); }
 
 LambdaExpr::child_range LambdaExpr::children() {
   initBodyIfNeeded();
-  return child_range(getStoredStmts(), getStoredStmts() + capture_size() + 1);
+  // The body may be absent when instantiation of the body is deferred
+  // (P0588R1); it is attached to the call operator and picked up lazily.
+  unsigned NumStored = capture_size();
+  if (getStoredStmts()[NumStored])
+    ++NumStored;
+  return child_range(getStoredStmts(), getStoredStmts() + NumStored);
 }
 
 LambdaExpr::const_child_range LambdaExpr::children() const {
   initBodyIfNeeded();
-  return const_child_range(getStoredStmts(),
-                           getStoredStmts() + capture_size() + 1);
+  unsigned NumStored = capture_size();
+  if (getStoredStmts()[NumStored])
+    ++NumStored;
+  return const_child_range(getStoredStmts(), getStoredStmts() + NumStored);
 }
 
 ExprWithCleanups::ExprWithCleanups(Expr *subexpr,

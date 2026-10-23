@@ -49,6 +49,15 @@ Clang will stop accepting non-ascii whitespaces as token separators
 in a future version of Clang.
 
 ### C++ Specific Potentially Breaking Changes
+- As a result of implementing P0588R1 (see the C++20 feature support section
+  below), the bodies of generic lambdas declared inside templates are
+  instantiated later than before, and only when the lambda's call operator
+  template is instantiated. Code that was previously rejected because an
+  invalid construct appeared in a substatement of a `constexpr if` that is
+  discarded during instantiation is now accepted. Diagnostics that are only
+  produced while instantiating such a body are now emitted at the point of
+  instantiation of the call operator rather than when the enclosing template
+  is instantiated.
 
 - The `[[carries_dependency]]` attribute is no longer recognized, in any language
   mode, as it was removed from the standard by
@@ -245,6 +254,19 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 
 - Now clang-scan-deps in P1689 format can find the dependencies described in
   module map file. See the documents of standard C++ modules for details.
+
+- Clang now implements the `[temp.inst]` rule of
+  [P0588R1](https://wg21.link/p0588r1): instantiating a generic lambda no
+  longer instantiates the substatements of a `if constexpr` in its body
+  unless the call operator template is itself instantiated. The body of a
+  generic lambda declared in a template is now instantiated when its call
+  operator is instantiated (or odr-used), rather than when the enclosing
+  function template is instantiated. Implicit captures are still recorded in
+  the closure type at the point where the closure is instantiated, so the
+  layout of closure types is unchanged. This fixes
+  [GH61426](https://github.com/llvm/llvm-project/issues/61426) and several
+  related bugs where code in a discarded `if constexpr` branch of a generic
+  lambda was instantiated and diagnosed eagerly.
 
 #### C++17 Feature Support
 

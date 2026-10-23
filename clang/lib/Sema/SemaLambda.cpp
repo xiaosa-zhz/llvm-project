@@ -1758,6 +1758,11 @@ static void addFunctionPointerConversion(Sema &S, SourceRange IntroducerRange,
   QualType ConvTy = S.Context.getFunctionType(PtrToFunctionTy, {}, ConvExtInfo);
 
   SourceLocation Loc = IntroducerRange.getBegin();
+  // The body of the call operator may not have been instantiated yet if the
+  // body of this lambda is instantiated lazily (P0588R1).
+  SourceLocation CallOpEndLoc = CallOperator->getBody()
+                                    ? CallOperator->getBody()->getEndLoc()
+                                    : CallOperator->getEndLoc();
   DeclarationName ConversionName
     = S.Context.DeclarationNames.getCXXConversionFunctionName(
         S.Context.getCanonicalType(PtrToFunctionTy));
@@ -1831,7 +1836,7 @@ static void addFunctionPointerConversion(Sema &S, SourceRange IntroducerRange,
       /*isInline=*/true, ExplicitSpecifier(),
       S.getLangOpts().CPlusPlus17 ? ConstexprSpecKind::Constexpr
                                   : ConstexprSpecKind::Unspecified,
-      CallOperator->getBody()->getEndLoc());
+      CallOpEndLoc);
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
 
@@ -1880,8 +1885,7 @@ static void addFunctionPointerConversion(Sema &S, SourceRange IntroducerRange,
         S.Context, Class, Loc, DeclarationNameInfo(InvokerName, Loc),
         InvokerFunctionTy, CallOperator->getTypeSourceInfo(), SC_Static,
         S.getCurFPFeatures().isFPConstrained(),
-        /*isInline=*/true, CallOperator->getConstexprKind(),
-        CallOperator->getBody()->getEndLoc());
+        /*isInline=*/true, CallOperator->getConstexprKind(), CallOpEndLoc);
     for (unsigned I = 0, N = CallOperator->getNumParams(); I != N; ++I)
       InvokerParams[I]->setOwningFunction(Invoke);
     Invoke->setParams(InvokerParams);
@@ -1946,12 +1950,16 @@ static void addBlockPointerConversion(Sema &S,
         S.Context.getCanonicalType(BlockPtrTy));
   DeclarationNameLoc NameLoc = DeclarationNameLoc::makeNamedTypeLoc(
       S.Context.getTrivialTypeSourceInfo(BlockPtrTy, Loc));
+  // The body of the call operator may not have been instantiated yet.
+  SourceLocation CallOpEndLoc = CallOperator->getBody()
+                                    ? CallOperator->getBody()->getEndLoc()
+                                    : CallOperator->getEndLoc();
   CXXConversionDecl *Conversion = CXXConversionDecl::Create(
       S.Context, Class, Loc, DeclarationNameInfo(Name, Loc, NameLoc), ConvTy,
       S.Context.getTrivialTypeSourceInfo(ConvTy, Loc),
       S.getCurFPFeatures().isFPConstrained(),
       /*isInline=*/true, ExplicitSpecifier(), ConstexprSpecKind::Unspecified,
-      CallOperator->getBody()->getEndLoc());
+      CallOpEndLoc);
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
   Class->addDecl(Conversion);
@@ -2376,7 +2384,7 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc,
   // and is not dependent, analyze the call operator to infer
   // its constexpr-ness, suppressing diagnostics while doing so.
   if (getLangOpts().CPlusPlus17 && !CallOperator->isInvalidDecl() &&
-      !CallOperator->isConstexpr() &&
+      !CallOperator->isConstexpr() && CallOperator->getBody() &&
       !isa<CoroutineBodyStmt>(CallOperator->getBody()) &&
       !Class->isDependentContext()) {
     CallOperator->setConstexprKind(
@@ -2588,14 +2596,19 @@ bool Sema::addInstantiatedCapturesToScope(
 Sema::LambdaScopeForCallOperatorInstantiationRAII::
     LambdaScopeForCallOperatorInstantiationRAII(
         Sema &SemaRef, FunctionDecl *FD, MultiLevelTemplateArgumentList MLTAL,
-        LocalInstantiationScope &Scope, bool ShouldAddDeclsFromParentScope)
+        LocalInstantiationScope &Scope, bool ShouldAddDeclsFromParentScope,
+        bool RebuildFunctionScope)
     : FunctionScopeRAII(SemaRef) {
-  if (!isLambdaCallOperator(FD)) {
+  if (!isLambdaCallOperator(FD) || !RebuildFunctionScope) {
+    // Either this is not a lambda call operator, or the caller has already
+    // set up the function scope (e.g. because it is instantiating the body of
+    // the call operator itself).
     FunctionScopeRAII::disable();
-    return;
+    if (!isLambdaCallOperator(FD))
+      return;
+  } else {
+    SemaRef.RebuildLambdaScopeInfo(cast<CXXMethodDecl>(FD));
   }
-
-  SemaRef.RebuildLambdaScopeInfo(cast<CXXMethodDecl>(FD));
 
   FunctionDecl *FDPattern = getPatternFunctionDecl(FD);
   if (!FDPattern)
